@@ -24,10 +24,10 @@
 #define CONTROL_PERIOD 14
 
 //headers
+#include <Wire.h>
 #include "SBUS.h"
 #include "MPU6050.h"
 #include "MsTimer2.h"
-#include "Wire.h"
 #include "Servo.h"
 
 //objects
