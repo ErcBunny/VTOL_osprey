@@ -352,10 +352,7 @@ Vector MPU6050::readRawAccel(void)
     #endif
     Wire.endTransmission();
 
-    Wire.beginTransmission(mpuAddress);
     Wire.requestFrom(mpuAddress, 6);
-
-    while (Wire.available() < 6);
 
     #if ARDUINO >= 100
 	uint8_t xha = Wire.read();
@@ -413,10 +410,7 @@ Vector MPU6050::readRawGyro(void)
     #endif
     Wire.endTransmission();
 
-    Wire.beginTransmission(mpuAddress);
     Wire.requestFrom(mpuAddress, 6);
-
-    while (Wire.available() < 6);
 
     #if ARDUINO >= 100
 	uint8_t xha = Wire.read();
@@ -626,14 +620,15 @@ uint8_t MPU6050::fastRegister8(uint8_t reg)
     #endif
     Wire.endTransmission();
 
-    Wire.beginTransmission(mpuAddress);
-    Wire.requestFrom(mpuAddress, 1);
-    #if ARDUINO >= 100
+    if (Wire.requestFrom(mpuAddress, 1) != 1)
+    {
+        return 0;
+    }
+#if ARDUINO >= 100
 	value = Wire.read();
     #else
 	value = Wire.receive();
     #endif;
-    Wire.endTransmission();
 
     return value;
 }
@@ -651,15 +646,15 @@ uint8_t MPU6050::readRegister8(uint8_t reg)
     #endif
     Wire.endTransmission();
 
-    Wire.beginTransmission(mpuAddress);
-    Wire.requestFrom(mpuAddress, 1);
-    while(!Wire.available()) {};
-    #if ARDUINO >= 100
+    if (Wire.requestFrom(mpuAddress, 1) != 1)
+    {
+        return 0;
+    }
+#if ARDUINO >= 100
 	value = Wire.read();
     #else
 	value = Wire.receive();
     #endif;
-    Wire.endTransmission();
 
     return value;
 }
@@ -690,17 +685,17 @@ int16_t MPU6050::readRegister16(uint8_t reg)
     #endif
     Wire.endTransmission();
 
-    Wire.beginTransmission(mpuAddress);
-    Wire.requestFrom(mpuAddress, 2);
-    while(!Wire.available()) {};
-    #if ARDUINO >= 100
+    if (Wire.requestFrom(mpuAddress, 2) != 2)
+    {
+        return 0;
+    }
+#if ARDUINO >= 100
         uint8_t vha = Wire.read();
         uint8_t vla = Wire.read();
     #else
         uint8_t vha = Wire.receive();
         uint8_t vla = Wire.receive();
     #endif;
-    Wire.endTransmission();
 
     value = vha << 8 | vla;
 
