@@ -624,7 +624,7 @@ uint8_t MPU6050::fastRegister8(uint8_t reg)
     {
         return 0;
     }
-#if ARDUINO >= 100
+    #if ARDUINO >= 100
 	value = Wire.read();
     #else
 	value = Wire.receive();
@@ -650,7 +650,7 @@ uint8_t MPU6050::readRegister8(uint8_t reg)
     {
         return 0;
     }
-#if ARDUINO >= 100
+    #if ARDUINO >= 100
 	value = Wire.read();
     #else
 	value = Wire.receive();

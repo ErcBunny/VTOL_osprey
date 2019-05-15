@@ -21,12 +21,16 @@
 #define CHANNEL_APM_MODE 9
 #define CHANNEL_DEBUG 10
 
+#define THROTTLE_HOVER 0
+
 #define CONTROL_PERIOD 14
+
+//above can be written in a header file
 
 //headers
 #include <Wire.h>
 #include "SBUS.h"
-#include "MPU6050.h"
+#include "MPU6050.h" //or shall we try mavlink?
 #include "MsTimer2.h"
 #include "Servo.h"
 
