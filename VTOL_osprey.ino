@@ -1,177 +1,138 @@
-//macros
-#define DEBUG
-
-#define TILT_SERVO 9
-
-#define CH440_ENA 12
-#define CH440_SWITCH 13
-
-#define COPTER 0
-#define PLANE 1
-#define COPTER_TO_PLANE 0
-#define PLANE_TO_COPTER 1
-#define NONE 2
-
-#define SBUS_PERIOD 14
-#define SBUS_MIN 306
-#define SBUS_MAX 1694
-#define DATA_MIN 1000
-#define DATA_MAX 2000
-#define CHANNEL_MODEL 8
-#define CHANNEL_APM_MODE 9
-#define CHANNEL_DEBUG 10
-
-#define THROTTLE_HOVER 0
-
-#define CONTROL_PERIOD 14
-
-//above can be written in a header file
-
 //headers
-#include <Wire.h>
+#include "./mavlink/ardupilotmega/mavlink.h"
+#include "config.h"
 #include "SBUS.h"
-#include "MPU6050.h" //or shall we try mavlink?
-#include "MsTimer2.h"
 #include "Servo.h"
+#include "Chrono.h"
 
 //objects
-SBUS rx(Serial1);
-SBUS copter(Serial2);
-SBUS plane(Serial3);
+SBUS rx_f4(Serial1);
+SBUS apm(Serial2);
 
 Servo tiltServo;
 
+Chrono debugIntvl;
+Chrono sbusIntvl_f4;
+Chrono sbusIntvl_apm;
+
 //global variables
 float channel_rx[16];
-float channel_copter[16];
-float channel_plane[16];
+float channel_f4[16];
+float channel_apm[16];
 bool failSafe;
 bool lostFrame;
 int model;
 int transition;
+mavlink_attitude_t attitude;
+mavlink_vfr_hud_t hudInfo;
 
 //channel commands
-const float channel_copter_forward[16];
-const float channel_plane_cruise[16];
+const float channel_f4_forward[16];
+const float channel_apm_cruise[16];
 
 //main structure
 void setup()
 {
+    //setup mavlink and debug serial
+    SERIAL_MAVLINK.begin(57600, SERIAL_8N1);
 #ifdef DEBUG
     Serial.begin(115200);
 #endif
-    //setup sbus coms
-    rx.setEndPoints(2, 182, 1694);
-    rx.setEndPoints(9, 292, 1692);
-    rx.begin();
-    copter.setEndPoints(2, 182, 1694);
-    copter.setEndPoints(9, 292, 1692);
-    copter.begin();
-    plane.setEndPoints(2, 182, 1694);
-    plane.setEndPoints(9, 292, 1692);
-    plane.begin();
+    //setup sbus comms
+    rx_f4.setEndPoints(2, 182, 1694);
+    rx_f4.setEndPoints(9, 292, 1692);
+    rx_f4.begin();
+    apm.setEndPoints(2, 182, 1694);
+    apm.setEndPoints(9, 292, 1692);
+    apm.begin();
     //setup I/O pins
     pinMode(CH440_ENA, OUTPUT);
     pinMode(CH440_SWITCH, OUTPUT);
     digitalWrite(CH440_ENA, 0);
     //init servo library
     tiltServo.attach(TILT_SERVO);
-    //init timers
-    MsTimer2::set(CONTROL_PERIOD, control);
-    MsTimer2::start();
 }
 
 void loop()
 {
     readSbus();
-    sendSbus();
-    delay(SBUS_PERIOD);
-#ifdef DEBUG
-    for (int i = 0; i <= 15; i++)
+    readMavlink();
+    switch (transition)
     {
-        Serial.print(channel_copter[i]);
-        Serial.print("\t");
+        case NONE:
+            switch (model)
+            {
+                case COPTER:
+                    memcpy(channel_f4, channel_rx, sizeof(float) * 16);
+                    digitalWrite(CH440_SWITCH, COPTER);
+                    break;
+                case PLANE:
+                    memcpy(channel_apm, channel_rx, sizeof(float) * 16);
+                    tiltServo.write(90 * (1 + channel_rx[CHANNEL_DEBUG]));
+                    digitalWrite(CH440_SWITCH, PLANE);
+                    break;
+                default:
+                    break;
+            }
+            if (sbusIntvl_f4.hasPassed(14))
+            {
+                sbusIntvl_f4.restart();
+                rx_f4.writeCal(channel_f4);
+            }
+            if (sbusIntvl_apm.hasPassed(14))
+            {
+                sbusIntvl_apm.restart();
+                apm.writeCal(channel_apm);
+            }
+            break;
+        case COPTER_TO_PLANE:
+            transition_copter_to_plane();
+            #if defined DEBUG
+                Serial.println("changed to plane");
+            #endif
+            transition = NONE;
+            break;
+        case PLANE_TO_COPTER:
+            transition_plane_to_copter();
+            #if defined DEBUG
+                Serial.println("changed to copter");
+            #endif
+            transition = NONE;
+            break;
+        default:
+            break;
     }
-    Serial.println();
-    Serial.print(transition);
-    Serial.print("\t");
-    Serial.println(model);
+#if defined DEBUG
+    if (debugIntvl.hasPassed(100))
+    {
+        debugIntvl.restart();
+        
+        Serial.print(attitude.roll);
+        Serial.print("\t");
+        Serial.print(attitude.pitch);
+        Serial.print("\t");
+        Serial.print(attitude.yaw);
+        Serial.print("\t");
+        Serial.println(hudInfo.alt);
+        /*
+        for (int i = 0; i <= 15; i++)
+        {
+            Serial.print(channel_apm[i]);
+            Serial.print("\t");
+        }
+        Serial.println();
+        Serial.print(transition);
+        Serial.print("\t");
+        Serial.println(model);
+        */
+    }
 #endif
 }
 
-void control()
-{
-    if (transition == NONE)
-    {
-        if (model == COPTER)
-        {
-            memcpy(channel_copter, channel_rx, sizeof(float) * 16);
-            //TODO: memcpy throttle and arm channel
-            digitalWrite(CH440_SWITCH, COPTER);
-        }
-        else if (model == PLANE)
-        {
-            memcpy(channel_copter, channel_rx, sizeof(float) * 16);
-            //TODO: memcpy throttle and arm channel
-            tiltServo.write(90 * (1 + channel_rx[CHANNEL_DEBUG]));
-            digitalWrite(CH440_SWITCH, PLANE);
-        }
-    }
-    if (transition == COPTER_TO_PLANE)
-    {
-        bool skipTrans = false;
-        MsTimer2::stop();
-        for (int i = 0; i < 100; i++)
-        {
-            readSbus();
-            if (transition == PLANE_TO_COPTER)
-            {
-                skipTrans = true;
-                break;
-            }
-            memcpy(channel_copter, channel_copter_forward, sizeof(float) * 16);
-            //TODO: modify throttle value for the other
-            sendSbus();
-        }
-        if (!skipTrans)
-        {
-            for (int i = 90; i > 0; i-=10)
-            {
-                digitalWrite(CH440_SWITCH, PLANE);
-                tiltServo.write(i);
-                readSbus();
-                if (transition == PLANE_TO_COPTER)
-                {
-                    tiltServo.write(90);
-                    break;
-                }
-                memcpy(channel_plane, channel_rx, sizeof(float) * 16);
-                //TODO: throttle and arm for the other
-                sendSbus();
-            }
-        }
-        transition = NONE;
-        MsTimer2::start();
-    }
-    if (transition == PLANE_TO_COPTER)
-    {
-        MsTimer2::stop();
-        transition = NONE;
-        MsTimer2::start();
-    }
-}
-
-//component functions
-/*
-    void readSbus(void):
-    read channel values from receiver and store them in channel_rx
-    decide whether it is a transition or not and tell the model is copter or plane
-*/
-//transition value is constantly overwritten (problem)
 void readSbus()
 {
     static float previousModelValue = 0;
-    rx.readCal(channel_rx, &failSafe, &lostFrame);
+    rx_f4.readCal(channel_rx, &failSafe, &lostFrame);
     if (abs(channel_rx[CHANNEL_MODEL] - previousModelValue) > 1)
     {
         if (channel_rx[CHANNEL_MODEL] < 0)
@@ -199,13 +160,78 @@ void readSbus()
     previousModelValue = channel_rx[CHANNEL_MODEL];
 }
 
-/*
-    void sendSbus(void):
-    simply send packets to different flight controllers
-    cannot be put into the function control
-*/
-void sendSbus()
+void readMavlink()
 {
-    copter.writeCal(channel_copter);
-    plane.writeCal(channel_plane);
+    //init
+    const int num_hbs = 60;                            // # of heartbeats to wait before activating STREAMS from APM. 60 = one minute.
+    static unsigned long previousMillisMAVLink = 0;    // will store last time MAVLink was transmitted and listened
+    static unsigned long next_interval_MAVLink = 1000; // next interval to count
+    static int num_hbs_past = num_hbs;
+    unsigned long currentMillisMAVLink = millis();
+    //heartbeat
+    mav_heartbeat_pack();
+    //request data
+    if (currentMillisMAVLink - previousMillisMAVLink >= next_interval_MAVLink)
+    {
+        previousMillisMAVLink = currentMillisMAVLink;
+        num_hbs_past++;
+        if (num_hbs_past >= num_hbs)
+        {
+            mav_Request_Data();
+            num_hbs_past = 0;
+        }
+    }
+    //extract info
+    mav_receive();
+}
+
+void mav_heartbeat_pack()
+{
+    mavlink_message_t msg;
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    mavlink_msg_heartbeat_pack(sysid, compid, &msg, type, autopilot_type, system_mode, custom_mode, system_state);
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    SERIAL_MAVLINK.write(buf, len);
+}
+
+void mav_Request_Data()
+{
+    mavlink_message_t msg;
+    uint8_t buf[MAVLINK_MAX_PACKET_LEN];
+    mavlink_msg_request_data_stream_pack(sysid, compid, &msg, 1, 0, MAV_DATA_STREAM_ALL, RATE_MSG, 1);
+    uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
+    SERIAL_MAVLINK.write(buf, len);
+}
+
+void mav_receive()
+{
+    mavlink_message_t msg;
+    mavlink_status_t status;
+    while (SERIAL_MAVLINK.available())
+    {
+        uint8_t c = SERIAL_MAVLINK.read();
+        if (mavlink_parse_char(MAVLINK_COMM_0, c, &msg, &status))
+        {
+            switch (msg.msgid)
+            {
+                case MAVLINK_MSG_ID_ATTITUDE:
+                    mavlink_msg_attitude_decode(&msg, &attitude);
+                    break;
+                case MAVLINK_MSG_ID_VFR_HUD:
+                    mavlink_msg_vfr_hud_decode(&msg, &hudInfo);
+                    break;
+            }
+            
+        }
+    }
+}
+
+void transition_copter_to_plane()
+{
+
+}
+
+void transition_plane_to_copter()
+{
+
 }
