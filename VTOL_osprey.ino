@@ -9,11 +9,12 @@
 SBUS rx_f4(Serial1);
 SBUS apm(Serial2);
 
-Servo tiltServo;
-
 Chrono debugIntvl;
 Chrono sbusIntvl_f4;
 Chrono sbusIntvl_apm;
+Chrono tempCounter;
+
+Servo tiltServo;
 
 //global variables
 float channel_rx[16];
@@ -26,18 +27,14 @@ int transition;
 mavlink_attitude_t attitude;
 mavlink_vfr_hud_t hudInfo;
 
-//channel commands
-const float channel_f4_forward[16];
-const float channel_apm_cruise[16];
-
 //main structure
 void setup()
 {
     //setup mavlink and debug serial
     SERIAL_MAVLINK.begin(57600, SERIAL_8N1);
-#ifdef DEBUG
-    Serial.begin(115200);
-#endif
+    #ifdef DEBUG
+        Serial.begin(115200);
+    #endif
     //setup sbus comms
     rx_f4.setEndPoints(2, 182, 1694);
     rx_f4.setEndPoints(9, 292, 1692);
@@ -49,14 +46,15 @@ void setup()
     pinMode(CH440_ENA, OUTPUT);
     pinMode(CH440_SWITCH, OUTPUT);
     digitalWrite(CH440_ENA, 0);
-    //init servo library
+    //init servo
     tiltServo.attach(TILT_SERVO);
+    //stop Chrono counting in background
+    tempCounter.stop();
 }
 
 void loop()
 {
     readSbus();
-    readMavlink();
     switch (transition)
     {
         case NONE:
@@ -64,6 +62,7 @@ void loop()
             {
                 case COPTER:
                     memcpy(channel_f4, channel_rx, sizeof(float) * 16);
+                    //TODO: tell apm not to move servos
                     digitalWrite(CH440_SWITCH, COPTER);
                     break;
                 case PLANE:
@@ -74,16 +73,7 @@ void loop()
                 default:
                     break;
             }
-            if (sbusIntvl_f4.hasPassed(14))
-            {
-                sbusIntvl_f4.restart();
-                rx_f4.writeCal(channel_f4);
-            }
-            if (sbusIntvl_apm.hasPassed(14))
-            {
-                sbusIntvl_apm.restart();
-                apm.writeCal(channel_apm);
-            }
+            sendSbus();
             break;
         case COPTER_TO_PLANE:
             transition_copter_to_plane();
@@ -102,33 +92,12 @@ void loop()
         default:
             break;
     }
-#if defined DEBUG
-    if (debugIntvl.hasPassed(100))
-    {
-        debugIntvl.restart();
-        
-        Serial.print(attitude.roll);
-        Serial.print("\t");
-        Serial.print(attitude.pitch);
-        Serial.print("\t");
-        Serial.print(attitude.yaw);
-        Serial.print("\t");
-        Serial.println(hudInfo.alt);
-        /*
-        for (int i = 0; i <= 15; i++)
-        {
-            Serial.print(channel_apm[i]);
-            Serial.print("\t");
-        }
-        Serial.println();
-        Serial.print(transition);
-        Serial.print("\t");
-        Serial.println(model);
-        */
-    }
-#endif
+    #if defined DEBUG
+        printDebug();
+    #endif
 }
 
+//functions
 void readSbus()
 {
     static float previousModelValue = 0;
@@ -158,6 +127,20 @@ void readSbus()
         }
     }
     previousModelValue = channel_rx[CHANNEL_MODEL];
+}
+
+void sendSbus()
+{
+    if (sbusIntvl_f4.hasPassed(14))
+    {
+        sbusIntvl_f4.restart();
+        rx_f4.writeCal(channel_f4);
+    }
+    if (sbusIntvl_apm.hasPassed(14))
+    {
+        sbusIntvl_apm.restart();
+        apm.writeCal(channel_apm);
+    }
 }
 
 void readMavlink()
@@ -228,10 +211,85 @@ void mav_receive()
 
 void transition_copter_to_plane()
 {
-
+    bool skipTrans = false;
+    bool recover = false;
+    tempCounter.restart();
+    while (!tempCounter.hasPassed(TIME_CONFIRM_TRANS))
+    {
+        readSbus();
+        if (transition == PLANE_TO_COPTER)
+        {
+            skipTrans = true;
+            break;
+        }
+        memcpy(channel_f4, channel_rx, sizeof(float) * 16);
+        //TODO: modify CHANNEL_PITCH to go forward and tell apm not to move servos
+        sendSbus();
+    }
+    tempCounter.stop();
+    if (!skipTrans)
+    {
+        int currentAngle = TILT_MAX;
+        int destAngle = TILT_MIN;
+        int step = -TILT_STEP;
+        tiltServo.write(currentAngle);
+        digitalWrite(CH440_SWITCH, PLANE);
+        while (currentAngle != destAngle)
+        {
+            tiltServo.write(currentAngle);
+            readSbus();
+            switch (transition)
+            {
+                case PLANE_TO_COPTER:
+                    destAngle = TILT_MAX;
+                    step = TILT_STEP;
+                    break;
+                case COPTER_TO_PLANE:
+                    destAngle = TILT_MIN;
+                    step = -TILT_STEP;
+                    break;
+                default:
+                    break;
+            }
+            memcpy(channel_apm, channel_rx, sizeof(float) * 16);
+            //TODO: details
+            sendSbus();
+            currentAngle += step;
+        }
+        if (model == COPTER)
+        {
+            digitalWrite(CH440_SWITCH, COPTER);
+        }
+    }
 }
 
 void transition_plane_to_copter()
 {
 
+}
+
+void printDebug()
+{
+    if (debugIntvl.hasPassed(100))
+    {
+        debugIntvl.restart();
+        Serial.print(attitude.roll);
+        Serial.print("\t");
+        Serial.print(attitude.pitch);
+        Serial.print("\t");
+        Serial.print(attitude.yaw);
+        Serial.print("\t");
+        Serial.println(hudInfo.alt);
+        /*
+            for (int i = 0; i <= 15; i++)
+            {
+                Serial.print(channel_apm[i]);
+                Serial.print("\t");
+            }
+            Serial.println();
+            Serial.print(transition);
+            Serial.print("\t");
+            Serial.println(model);
+            */
+    }
 }

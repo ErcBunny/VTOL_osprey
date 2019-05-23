@@ -10,6 +10,10 @@
 #define COPTER_TO_PLANE 0
 #define PLANE_TO_COPTER 1
 #define NONE 2
+#define TIME_CONFIRM_TRANS 1500
+#define TILT_MAX 80
+#define TILT_MIN 0
+#define TILT_STEP 1
 
 #define SBUS_PERIOD 14
 #define SBUS_MIN 306
